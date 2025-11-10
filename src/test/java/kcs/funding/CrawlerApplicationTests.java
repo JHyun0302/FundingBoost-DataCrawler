@@ -1,4 +1,4 @@
-package kcs.funding.money.aggregation.fundingboostdatacrawler;
+package kcs.funding;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

@@ -8,8 +8,21 @@ spring:
     username: sa
     password:
     driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: HikariPool
+      minimum-idle: 5
+      maximum-pool-size: 10
+      auto-commit: false
+      connection-timeout: 30000   # ms
+      idle-timeout: 600000        # ms
+      max-lifetime: 1800000       # ms
+      transaction-isolation: TRANSACTION_READ_COMMITTED
 
   jpa:
     properties:
       hibernate:
+        ddl-auto: update
         dialect: org.hibernate.dialect.H2Dialect
+        format_sql: false
+        show_sql: false
+        jdbc.time_zone: UTC

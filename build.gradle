@@ -9,55 +9,47 @@ version = '0.0.1-SNAPSHOT'
 description = 'FundingBoost-DataCrawler'
 
 java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }
 }
 
 configurations {
-    compileOnly {
-        extendsFrom annotationProcessor
-    }
+    compileOnly { extendsFrom annotationProcessor }
 }
 
-repositories {
-    mavenCentral()
-}
+repositories { mavenCentral() }
 
 dependencies {
-    // Spring Web
+    // --- Spring ---
     implementation 'org.springframework.boot:spring-boot-starter-web'
-
-    // Validation
     implementation 'org.springframework.boot:spring-boot-starter-validation'
-
-    // JPA
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+    implementation 'org.springframework.boot:spring-boot-starter-logging'
+    implementation 'com.github.gavlyukovskiy:p6spy-spring-boot-starter:1.9.0'
 
-    // Oracle Driver (로컬 빌드 시에는 별도 Maven 다운로드 필요 X, Gradle 다운로드 가능)
+    // DB 드라이버
     runtimeOnly 'com.oracle.database.jdbc:ojdbc11:23.3.0.23.09'
-
-    // H2 (로컬)
     runtimeOnly 'com.h2database:h2'
 
-    // Scheduling
-    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'net.javacrumbs.shedlock:shedlock-spring:6.10.0'
+    implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:6.10.0'
 
-    // ShedLock (스케줄 중복 실행 방지)
-    implementation 'net.javacrumbs.shedlock:shedlock-spring:5.10.0'
-    implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:5.10.0'
-
-    // JSON Parse (크롤링 결과 처리)
+    // JSON & HTML 파서
     implementation 'com.fasterxml.jackson.core:jackson-databind'
     implementation 'org.jsoup:jsoup:1.17.2'
+    // Selenium + ChromeDriver 관리
+    implementation 'org.seleniumhq.selenium:selenium-java:4.25.0'
+    implementation 'io.github.bonigarcia:webdrivermanager:5.9.2'
 
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // Lombok
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
     testCompileOnly 'org.projectlombok:lombok'
     testAnnotationProcessor 'org.projectlombok:lombok'
+
+    // Test
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
-tasks.named('test') {
-    useJUnitPlatform()
-}
+// 테스트 플랫폼
+tasks.named('test') { useJUnitPlatform() }

@@ -1,9 +1,11 @@
 package kcs.funding.crawler.service.crawler;
 
 import java.util.Optional;
+import jakarta.transaction.Transactional;
 import kcs.funding.crawler.entity.Item;
 import kcs.funding.crawler.repository.ItemRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -12,21 +14,27 @@ import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class KakaoItemCrawler {
 
     private final ItemRepository itemRepository;
 
-    public void crawlBrand(String brandUrl, String brandName, String categoryName) {
+    /**
+     * @return 처리된 건수(신규+업데이트)
+     */
+    @Transactional
+    public int crawlBrand(String brandUrl, String brandName, String categoryName) {
+        int affected = 0;
         try {
             Document doc = Jsoup.connect(brandUrl)
                     .userAgent("Mozilla/5.0")
-                    .timeout(8000)
+                    .timeout(10000)
                     .get();
 
+            // 카카오 선물하기는 동적 렌더링이 있을 수 있음 -> 필요하면 Selenium으로 대체
             Elements productLinks = doc.select("a[href^=/product/]");
 
             for (Element link : productLinks) {
-
                 String aria = link.attr("aria-label");
                 if (!aria.contains("상품명")) continue;
 
@@ -38,16 +46,17 @@ public class KakaoItemCrawler {
                     imageUrl = "https:" + imageUrl;
                 }
 
-                // ✅ 상품 상세 페이지에서 옵션 정보 가져오기
-                String productId = link.attr("href").replace("/product/", "").trim();
+                String productId = link.attr("href")
+                        .replace("/product/", "")
+                        .trim();
+
                 String optionName = crawlOptionNames(productId);
 
-                // 파싱한 데이터가 이미 DB에 쌓인 데이터인 경우
                 Optional<Item> existing = itemRepository.findByProductId(productId);
                 if (existing.isPresent()) {
-                    // 업데이트 (가격/이미지/옵션)
                     Item item = existing.get();
                     item.update(itemName, itemPrice, imageUrl, optionName);
+                    affected++;
                     continue;
                 }
 
@@ -57,15 +66,18 @@ public class KakaoItemCrawler {
                         imageUrl,
                         brandName,
                         categoryName,
-                        optionName
+                        optionName,
+                        productId
                 );
 
                 itemRepository.save(item);
+                affected++;
             }
 
         } catch (Exception e) {
             throw new RuntimeException("크롤링 실패 -> " + brandUrl, e);
         }
+        return affected;
     }
 
     private String crawlOptionNames(String productId) {
@@ -73,11 +85,10 @@ public class KakaoItemCrawler {
             String detailUrl = "https://gift.kakao.com/product/" + productId;
             Document detailDoc = Jsoup.connect(detailUrl)
                     .userAgent("Mozilla/5.0")
-                    .timeout(8000)
+                    .timeout(10000)
                     .get();
 
-            Elements radios = detailDoc.select("div:contains(선택옵션) ~ ul input[type=radio] + label, input[type=radio]");
-
+            // 필요시 더 정교화
             Elements labelList = detailDoc.select("label");
             if (labelList.isEmpty()) return null;
 
@@ -107,5 +118,4 @@ public class KakaoItemCrawler {
         String price = ariaLabel.replaceAll("[^0-9]", "");
         return price.isEmpty() ? 0 : Integer.parseInt(price);
     }
-
 }

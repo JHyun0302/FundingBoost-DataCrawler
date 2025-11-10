@@ -35,22 +35,23 @@ public class Item {
     private String itemImageUrl;
 
     @NotEmpty
-    @Column(name = "brand_name", length = 100)
+    @Column(name = "brand_name", length = 3000)
     private String brandName;
 
     @NotEmpty
-    @Column(name = "category", length = 100)
+    @Column(name = "category", length = 3000)
     private String category;
 
-    @Column(name = "option_name", length = 100)
+    @Column(name = "option_name", length = 3000)
     private String optionName;
 
     @Column(name = "product_id", unique = true, nullable = false)
     private String productId;
 
-    public static Item createItem(String itemName, int itemPrice, String itemImageUrl,
-                                  String brandName, String category, String optionName) {
-
+    public static Item createItem(
+            String itemName, int itemPrice, String itemImageUrl,
+            String brandName, String category, String optionName, String productId
+    ) {
         Item item = new Item();
         item.itemName = itemName;
         item.itemPrice = itemPrice;
@@ -58,6 +59,7 @@ public class Item {
         item.brandName = brandName;
         item.category = category;
         item.optionName = optionName;
+        item.productId = productId;
         return item;
     }
 
@@ -67,5 +69,6 @@ public class Item {
         this.itemImageUrl = imageUrl;
         this.optionName = optionName;
     }
+
 }
 
