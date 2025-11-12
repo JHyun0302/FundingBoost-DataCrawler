@@ -4,7 +4,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Map;
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import io.github.bonigarcia.wdm.WebDriverManager;
 import kcs.funding.crawler.entity.BrandTarget;
@@ -20,6 +22,7 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -28,6 +31,9 @@ import org.springframework.stereotype.Service;
 public class BrandDiscoveryService {
 
     private final BrandTargetRepository brandTargetRepository;
+    private static final Pattern BRAND_ID = Pattern.compile("/brand/(\\d+)");
+
+    private static final int brandUrlCnt = 10;
 
     public void discoverBrands() {
         Map<String, String> categories = Map.of(
@@ -40,67 +46,104 @@ public class BrandDiscoveryService {
         );
 
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox",
-                "--window-size=1280,1800",
-                "--disable-dev-shm-usage",
-                "--lang=ko-KR", "--user-agent=Mozilla/5.0");
+        options.addArguments("--headless=new","--disable-gpu","--no-sandbox",
+                "--window-size=1280,2000","--disable-dev-shm-usage",
+                "--lang=ko-KR","--user-agent=Mozilla/5.0");
         WebDriverManager.chromedriver().setup();
 
         WebDriver driver = new ChromeDriver(options);
+        // 실행 중 중복 방지(동일 트랜잭션 가시성 문제 회피)
+        Set<String> seenUrls = new HashSet<>();
+
         try {
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
 
             categories.forEach((categoryName, url) -> {
                 try {
                     driver.get(url);
-
-                    // 페이지 내 브랜드 섹션이 로드될 때까지 대기 (선택자 상황에 따라 보정)
-                    // a[href*="/brand/"]가 아니라 '브랜드' 앵커 블록이 보일 때를 타겟팅
-                    wait.until(d -> ((JavascriptExecutor) d)
+                    wait.until(d -> ((JavascriptExecutor)d)
                             .executeScript("return document.readyState").equals("complete"));
+                    // 후행 로딩 대기
+                    Thread.sleep(1000);
 
-                    // 네트워크 후행 로딩 고려 - 가장 단순한 폴링
-                    Thread.sleep(1200);
+                    // 1) 카테고리 페이지에서 '유니크한 브랜드 URL'만 추출
+                    Document doc = Jsoup.parse(driver.getPageSource(), url);
+                    // a[href*="/brand/"] 중 /brand/<숫자> 형식만
+                    LinkedHashSet<String> brandUrls = doc.select("a[href*=\"/brand/\"]").stream()
+                            .map(a -> abs("https://gift.kakao.com", a.attr("href")))
+                            .map(BrandDiscoveryService::normalizeBrandUrl) // https, 슬래시, 쿼리 제거
+                            .filter(href -> BRAND_ID.matcher(href).find())
+                            .collect(Collectors.toCollection(LinkedHashSet::new));
 
-                    String html = driver.getPageSource();
-                    Document doc = Jsoup.parse(html, url);
-                    Elements brandLinks = doc.select("a[href*=\"/brand/\"]");
+                    // 중복 제거 후 상위 10개
+                    List<String> top10 = brandUrls.stream().limit(brandUrlCnt).toList();
+                    log.info("category={} candidates={} picked={}", categoryName, brandUrls.size(), top10.size());
 
-                    log.info("category={}, links={}", categoryName, brandLinks.size());
-
-                    int count = 0;
-                    for (Element link : brandLinks) {
-                        if (count >= 10) break;
-
-                        String href = link.attr("href");
-                        if (!href.startsWith("http")) {
-                            href = "https://gift.kakao.com" + href;
+                    for (String brandUrl : top10) {
+                        // 실행 중 중복/기등록 모두 스킵
+                        if (!seenUrls.add(brandUrl)) {
+                            log.debug("skip (seen in this run): {}", brandUrl);
+                            continue;
                         }
-                        String brandUrl = href;
-                        String brandName = link.text().trim();
+                        if (brandTargetRepository.existsByBrandUrl(brandUrl)) {
+                            log.debug("skip (exists in DB): {}", brandUrl);
+                            continue;
+                        }
 
-                        // SLF4J placeholder 사용
-                        log.info("brandUrl={}", brandUrl);
-                        log.info("brandName={}", brandName);
+                        // 2) 브랜드 상세 페이지에서 '정확한 브랜드명' 추출
+                        String brandName = fetchBrandName(driver, wait, brandUrl);
 
-                        if (brandName.isBlank()) continue; // 비어있는 텍스트 방지
-                        if (brandTargetRepository.existsByBrandUrl(brandUrl)) continue;
+                        if (brandName == null || brandName.isBlank()) {
+                            log.warn("brand name not found: {}", brandUrl);
+                            continue;
+                        }
+                        // “브랜드명:” 같은 접두 제거(안전망)
+                        brandName = brandName.replaceFirst("^\\s*브랜드명\\s*[:：]\\s*", "").trim();
 
                         BrandTarget target = BrandTarget.create(brandName, categoryName, brandUrl);
                         brandTargetRepository.save(target);
-                        count++;
+                        log.info("saved: [{}] {} -> {}", categoryName, brandName, brandUrl);
                     }
                 } catch (Exception e) {
-                    throw new RuntimeException("브랜드 수집 실패: " + url, e);
+                    // 개별 카테고리 실패는 로깅만 하고 다음 카테고리 진행
+                    log.error("카테고리 수집 실패 - {} : {}", categoryName, e.getMessage(), e);
                 }
             });
-        } catch (Exception e) {
-            throw new RuntimeException("크롤러 초기화 실패", e);
         } finally {
             driver.quit();
         }
-
         log.info("브랜드 자동 수집 완료");
     }
-}
 
+    private static String abs(String base, String href) {
+        if (href == null) return "";
+        if (href.startsWith("http")) return href;
+        if (!href.startsWith("/")) href = "/" + href;
+        return base + href;
+    }
+
+    private static String normalizeBrandUrl(String url) {
+        // https 강제 / 쿼리/프래그먼트 제거 / 마지막 슬래시 제거
+        String u = url.replaceFirst("^http://", "https://");
+        int q = u.indexOf('?'); if (q > -1) u = u.substring(0, q);
+        int h = u.indexOf('#'); if (h > -1) u = u.substring(0, h);
+        if (u.endsWith("/")) u = u.substring(0, u.length()-1);
+        return u;
+    }
+
+    private static String fetchBrandName(WebDriver driver, WebDriverWait wait, String brandUrl) throws InterruptedException {
+        driver.get(brandUrl);
+        wait.until(d -> ((JavascriptExecutor)d)
+                .executeScript("return document.readyState").equals("complete"));
+        Thread.sleep(600);
+
+        Document brandDoc = Jsoup.parse(((ChromeDriver)driver).getPageSource(), brandUrl);
+
+        Element og = brandDoc.selectFirst("meta[property=og:title]");
+        if (og != null && !og.attr("content").isBlank()) {
+            return og.attr("content").trim();
+        }
+        Element h = brandDoc.selectFirst("h1, h2, .brand-title, .BrandTitle, [data-brand-title]");
+        return h != null ? h.text().trim() : null;
+    }
+}

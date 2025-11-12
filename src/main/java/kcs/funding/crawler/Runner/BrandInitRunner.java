@@ -15,7 +15,7 @@ public class BrandInitRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         System.out.println("🚀 브랜드 자동 초기 수집 시작");
-        brandDiscoveryService.discoverBrands();
+//        brandDiscoveryService.discoverBrands();
         System.out.println("✅ 브랜드 자동 초기 수집 완료");
     }
 }

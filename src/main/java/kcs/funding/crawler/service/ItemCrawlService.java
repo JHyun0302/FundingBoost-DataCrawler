@@ -11,12 +11,13 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.*;
+import org.openqa.selenium.support.ui.ExpectedCondition;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,12 +33,14 @@ public class ItemCrawlService {
     private final WebDriver driver;
     private final WebDriverWait wait;
 
+    // ====== Public APIs ======
+
     @PreDestroy
     public void shutdown() {
-        driver.quit();
+        try { driver.quit(); } catch (Exception ignored) {}
     }
 
-    /** 전체 브랜드 표를 돌며 적재 */
+    /** 전체 브랜드 일괄 적재 */
     public int crawlAllBrands(int perBrandLimit) {
         List<BrandTarget> brands = brandTargetRepository.findAll();
         int total = 0;
@@ -52,68 +55,54 @@ public class ItemCrawlService {
         return total;
     }
 
-    /** 단일 브랜드 테스트 */
+    /** 단일 브랜드 적재 (리스트 → 상세 보강) */
     public int crawlBrandPage(String brandUrl, String brandName, String categoryName, int perBrandLimit) {
         driver.get(brandUrl);
-        waitUntilDomReady();
+        waitDomReady();
+        lazyScroll(5, 500);
+        waitPriceHints();
 
-        // lazy-load 유도
-        lazyScroll(5, 600);
-        waitPriceNodesShort();
+        // 1) 리스트 페이지에서 앵커들을 JS로 스냅샷(문자열 데이터만) 수집
+        List<ProductRow> rows = collectListSnapshotJS();
+        if (rows.isEmpty()) {
+            log.info("no product anchors found: {}", brandUrl);
+            return 0;
+        }
 
-        String html = driver.getPageSource();
-        Document doc = Jsoup.parse(html, brandUrl);
+        // perBrandLimit 적용
+        if (perBrandLimit > 0 && rows.size() > perBrandLimit) {
+            rows = rows.subList(0, perBrandLimit);
+        }
 
-        // 상품 카드 앵커 (aria-label 포함)
-        Elements cards = doc.select("a[href^=/product/][aria-label]");
         int affected = 0;
 
-        for (Element a : cards) {
-            if (perBrandLimit > 0 && affected >= perBrandLimit) break;
+        // 2) 상세 보강(가격 0일 때만 새 탭 열어 보강)
+        for (ProductRow r : rows) {
+            // 필수값 검증
+            if (r.productId == null || r.productId.isBlank()) continue;
 
-            String href = a.attr("href");
-            String productId = extractProductId(href);
-            if (productId == null) continue;
-
-            String aria = a.attr("aria-label");
-            String name = extractNameFromAria(aria);
-
-            int price = resolvePriceNearAnchor(a);
-            // 가격이 여전히 0이면 디버깅 로그를 남겨 원인 파악
-            if (price <= 0) {
-                log.debug("price not found; aria='{}', anchorText='{}'",
-                        aria, a.text());
+            // 가격 보강
+            if (r.price <= 0) {
+                int v = fetchPriceFromDetailInNewTab(r.productId);
+                if (v > 0) r.price = v;
             }
 
-            // 이미지 (lazy 속성 우선)
-            Element img = a.selectFirst("img");
-            String image = extractImage(img);
-            if (isFallbackImage(image)) {
-                // srcset이나 fname 파라미터에서 복원 시도
-                image = extractImageFromSrcset(a);
-            }
-            if (isFallbackImage(image)) {
-                // 여전히 기본 썸네일이면 skip
+            // 이미지 없으면 스킵(@NotEmpty 회피)
+            if (isFallbackImage(r.imageUrl) || r.imageUrl.isBlank()) {
+                log.debug("skip item due to empty image; pid={}", r.productId);
                 continue;
             }
 
-            // 상세 옵션 (필요 시 Selenium으로 상세 페이지 열어 파싱)
-            String option = extractOptionsBySelenium(productId);
-
-            final String fName = name;
-            final int fPrice = price;
-            final String fImage = image;
-            final String fOption = option;
+            final String fPid = r.productId;
+            final String fName = r.name;
+            final int fPrice = r.price;
+            final String fImage = r.imageUrl;
             final String fBrand = brandName;
             final String fCategory = categoryName;
-            final String fPid = productId;
+            final String fOption = extractOptionsByDetailInNewTab(r.productId); // 필요 없다면 null 반환 허용
 
-            // upsert
             affected += itemRepository.findByProductId(fPid)
-                    .map(it -> {
-                        it.update(fName, fPrice, fImage, fOption);
-                        return 0;
-                    })
+                    .map(it -> { it.update(fName, fPrice, fImage, fOption); return 0; })
                     .orElseGet(() -> {
                         Item item = Item.createItem(fName, fPrice, fImage, fBrand, fCategory, fOption, fPid);
                         itemRepository.save(item);
@@ -125,181 +114,183 @@ public class ItemCrawlService {
         return affected;
     }
 
-    // --- helpers ---
+    // ====== Snapshot & Parsing ======
 
-    private void waitUntilDomReady() {
-        new WebDriverWait(driver, Duration.ofSeconds(10))
-                .until(d -> ((JavascriptExecutor) d).executeScript("return document.readyState").equals("complete"));
-    }
+    /** 리스트 페이지에서 pid, name, priceText, imageUrl을 문자열로 수집 (표준 CSS만 사용) */
+    @SuppressWarnings("unchecked")
+    private List<ProductRow> collectListSnapshotJS() {
+        String script =
+                "const anchors = Array.from(document.querySelectorAll(\"a[href^='/product/'][aria-label]\"));\n" +
+                        "function cleanName(aria){\n" +
+                        "  if(!aria) return '';\n" +
+                        "  let s = aria.replace('상품명 :', '상품명:').replace('상품명 :', '상품명:').trim();\n" +
+                        "  const p = s.indexOf('판매가'); if(p>0) s = s.substring(0,p);\n" +
+                        "  s = s.replace('상품명:','').trim();\n" +
+                        "  return s;\n" +
+                        "}\n" +
+                        "function findPriceText(node){\n" +
+                        "  const re = /(\\d{1,3}(?:,\\d{3})*)\\s*원/;\n" +
+                        "  const seen = new Set();\n" +
+                        "  function textOf(n){return ((n&&n.innerText)||'') + ' ' + ((n&&n.textContent)||'');}\n" +
+                        "  // 자기 자신과 자손 순회 (깊이 제한)\n" +
+                        "  const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);\n" +
+                        "  let depth=0, cur=node; \n" +
+                        "  while(cur){\n" +
+                        "    if(!seen.has(cur)){\n" +
+                        "      seen.add(cur);\n" +
+                        "      const t = textOf(cur).replace(/\\s+/g,' ').trim();\n" +
+                        "      const m = re.exec(t); if(m) return m[0];\n" +
+                        "    }\n" +
+                        "    cur = walker.nextNode(); depth++; if(depth>800) break;\n" +
+                        "  }\n" +
+                        "  // 가까운 컨테이너(카드)와 부모까지 확장\n" +
+                        "  const card = node.closest('li,div,article') || node.parentElement;\n" +
+                        "  if(card){\n" +
+                        "    let t = textOf(card).replace(/\\s+/g,' ').trim();\n" +
+                        "    let m = re.exec(t); if(m) return m[0];\n" +
+                        "    if(card.parentElement){\n" +
+                        "      t = textOf(card.parentElement).replace(/\\s+/g,' ').trim();\n" +
+                        "      m = re.exec(t); if(m) return m[0];\n" +
+                        "    }\n" +
+                        "  }\n" +
+                        "  return '';\n" +
+                        "}\n" +
+                        "function normalize(u){ if(!u) return ''; u=u.trim(); if(u.startsWith('//')) return 'https:'+u; return u; }\n" +
+                        "function imageUrlOf(node){\n" +
+                        "  let img = node.querySelector('img');\n" +
+                        "  if(img){\n" +
+                        "    let u = img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy');\n" +
+                        "    if(u) return normalize(u);\n" +
+                        "  }\n" +
+                        "  const s = node.querySelector(\"img[srcset],source[srcset],img[src*='fname='],source[src*='fname=']\");\n" +
+                        "  if(s){\n" +
+                        "    let src = s.getAttribute('srcset') || s.getAttribute('src') || '';\n" +
+                        "    if(src.includes(' ')) src = src.split(/\\s+/)[0];\n" +
+                        "    if(src.includes('fname=')){\n" +
+                        "      const tail = src.split('fname=')[1]||''; const fname = tail.split('&')[0]||'';\n" +
+                        "      return fname.startsWith('http') ? fname : ('https:'+fname);\n" +
+                        "    }\n" +
+                        "    return normalize(src);\n" +
+                        "  }\n" +
+                        "  return '';\n" +
+                        "}\n" +
+                        "return anchors.map(a=>{\n" +
+                        "  const href = a.getAttribute('href')||'';\n" +
+                        "  const m = /\\/product\\/(\\d+)/.exec(href);\n" +
+                        "  const pid = m?m[1]:'';\n" +
+                        "  const name = cleanName(a.getAttribute('aria-label')||'');\n" +
+                        "  const priceText = findPriceText(a);\n" +
+                        "  const img = imageUrlOf(a);\n" +
+                        "  return [pid,name,priceText,img];\n" +
+                        "});";
 
-    private void lazyScroll(int times, long sleepMs) {
-        for (int i = 0; i < times; i++) {
-            ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, document.body.scrollHeight);");
-            try { Thread.sleep(sleepMs); } catch (InterruptedException ignored) {}
-        }
-    }
+        Object result = ((JavascriptExecutor) driver).executeScript(script);
+        List<ProductRow> out = new ArrayList<>();
 
-    private String extractProductId(String href) {
-        if (href == null) return null;
-        // /product/12345?param= -> 12345
-        String path = href;
-        int idx = path.indexOf("/product/");
-        if (idx < 0) return null;
-        String tail = path.substring(idx + "/product/".length());
-        int q = tail.indexOf('?');
-        return (q >= 0) ? tail.substring(0, q) : tail;
-    }
+        if (result instanceof List) {
+            List<?> rows = (List<?>) result;
+            for (Object row : rows) {
+                if (!(row instanceof List)) continue;
+                List<?> cols = (List<?>) row;
+                String pid = getString(cols, 0);
+                String name = getString(cols, 1);
+                String priceText = getString(cols, 2);
+                String img = getString(cols, 3);
 
-    private String extractNameFromAria(String aria) {
-        if (aria == null) return "";
-        // "상품명: XXX 판매가 12,345원" 패턴
-        String s = aria.replace("상품명 :", "상품명:")
-                .replace("상품명 :", "상품명:")
-                .trim();
-        int p = s.indexOf("판매가");
-        if (p > 0) s = s.substring(0, p);
-        s = s.replace("상품명:", "").trim();
-        return s;
-    }
+                int price = parsePriceFromText(priceText);
+                if (price <= 0) {
+                    // priceText 없었어도 최종 파서는 last resort로 전역 숫자 파싱 시도 가능
+                    price = 0;
+                }
+                if (img != null && img.startsWith("//")) img = "https:" + img;
 
-    // 기존: aria 기반
-    private static final Pattern P_PRICE_ARIA = Pattern.compile("판매가\\s*([\\d,]+)\\s*원");
-    // 텍스트 어디서든 "숫자 + 원" 을 잡되, 가장 앞(가까운) 매치만 사용
-    private static final Pattern P_PRICE_ANY = Pattern.compile("(\\d{1,3}(?:,\\d{3})*)(?=\\s*원)");
-
-    private int parsePriceFromAria(String aria) {
-        if (aria == null) return 0;
-        Matcher m = P_PRICE_ARIA.matcher(aria);
-        if (m.find()) {
-            String num = m.group(1).replace(",", "");
-            return safeToInt(num);
-        }
-        return 0;
-    }
-
-    private int parsePriceFromText(String text) {
-        if (text == null) return 0;
-        Matcher m = P_PRICE_ANY.matcher(text);
-        if (m.find()) {
-            String num = m.group(1).replace(",", "");
-            return safeToInt(num);
-        }
-        return 0;
-    }
-
-    private int safeToInt(String digits) {
-        try {
-            long v = Long.parseLong(digits);
-            if (v <= 0) return 0;
-            if (v > Integer.MAX_VALUE) return Integer.MAX_VALUE; // 비정상 큰 값 보호
-            return (int) v;
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    /** 앵커 주변에서 가격 텍스트를 찾는다: aria → 앵커 내부 → 카드 노드(closest li/div/article) → 형제 노드 */
-    private int resolvePriceNearAnchor(Element a) {
-        // 1) aria-label 우선
-        int price = parsePriceFromAria(a.attr("aria-label"));
-        if (price > 0) return price;
-
-        // 2) 앵커 내부에서 직접 찾기
-        Element inside = a.selectFirst("*:matchesOwn(\\d[\\d,]*\\s*원), .price, [class*=price], strong, span");
-        if (inside != null) {
-            price = parsePriceFromText(inside.text());
-            if (price > 0) return price;
-        }
-
-        // 3) 카드 컨테이너(가장 가까운 li/div/article)에서 찾기
-        Element card = a.closest("li, div, article");
-        if (card != null) {
-            Element inCard = card.selectFirst("*:matchesOwn(\\d[\\d,]*\\s*원), .price, [class*=price], strong, span");
-            if (inCard != null) {
-                price = parsePriceFromText(inCard.text());
-                if (price > 0) return price;
+                ProductRow pr = new ProductRow();
+                pr.productId = pid;
+                pr.name = name == null ? "" : name.trim();
+                pr.price = price;
+                pr.imageUrl = img == null ? "" : img.trim();
+                out.add(pr);
             }
-            // 4) 형제들까지 범위 조금 확장
-            Element parent = card.parent();
-            if (parent != null) {
-                Element near = parent.selectFirst("*:matchesOwn(\\d[\\d,]*\\s*원), .price, [class*=price], strong, span");
-                if (near != null) {
-                    price = parsePriceFromText(near.text());
-                    if (price > 0) return price;
+        }
+        log.info("snapshot collected: {} anchors", out.size());
+        return out;
+    }
+
+    private String getString(List<?> cols, int idx) {
+        if (cols.size() <= idx) return "";
+        Object v = cols.get(idx);
+        return v == null ? "" : String.valueOf(v);
+    }
+
+    // ====== Detail (new tab) ======
+
+    /** 상세 페이지에서 가격 보강(새 탭 이용해 원본 탭 DOM 보존) */
+    private int fetchPriceFromDetailInNewTab(String productId) {
+        String detailUrl = "https://gift.kakao.com/product/" + productId;
+        String original = driver.getWindowHandle();
+        try {
+            ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", detailUrl);
+
+            // 탭 전환 대기
+            wait.until(numberOfWindowsToBe(2));
+            for (String h : driver.getWindowHandles()) {
+                if (!h.equals(original)) {
+                    driver.switchTo().window(h);
+                    break;
                 }
             }
+
+            waitDomReady();
+            lazyScroll(1, 200);
+
+            // meta 우선
+            String meta = (String) ((JavascriptExecutor) driver).executeScript(
+                    "var p=document.querySelector(\"meta[property='og:price:amount'],meta[property='product:price:amount']\");" +
+                            "return p?p.content:'';");
+            int v = parsePriceFromText(meta == null ? "" : meta + "원");
+            if (v > 0) return v;
+
+            // 본문 스캔(표준 셀렉터만)
+            WebElement body = driver.findElement(By.tagName("body"));
+            String txt = body.getText();
+            v = parsePriceFromText(txt);
+            return Math.max(v, 0);
+        } catch (Exception e) {
+            log.debug("detail price fetch failed: {}", productId, e);
+            return 0;
+        } finally {
+            try { driver.close(); } catch (Exception ignored) {}
+            driver.switchTo().window(original);
+            waitDomReady();
         }
-
-        return 0;
     }
 
-    private String extractImage(Element img) {
-        if (img == null) return "";
-        String url = firstNonBlank(
-                img.attr("data-src"),
-                img.attr("data-original"),
-                img.attr("data-lazy"),
-                img.attr("src")
-        );
-        if (url.startsWith("//")) url = "https:" + url;
-        return url;
-    }
-
-    private String extractImageFromSrcset(Element scope) {
-        if (scope == null) return "";
-        // fname= 파라미터에서 원본 추출
-        Element any = scope.selectFirst("img[srcset], source[srcset], img[src*='fname='], source[src*='fname=']");
-        if (any == null) return "";
-        String src = firstNonBlank(any.attr("srcset"), any.attr("src"));
-        if (src == null) return "";
-        // srcset일 경우 첫 URL 취득
-        if (src.contains(" ")) src = src.split("\\s+")[0];
-        if (src.contains("fname=")) {
-            int i = src.indexOf("fname=");
-            String tail = src.substring(i + 6);
-            int amp = tail.indexOf('&');
-            String fname = (amp > 0 ? tail.substring(0, amp) : tail);
-            // fname은 URL-encoded일 수 있음
-            return fname.startsWith("http") ? fname : "https:" + fname;
-        }
-        if (src.startsWith("//")) return "https:" + src;
-        return src;
-    }
-
-    private boolean isFallbackImage(String url) {
-        return url == null || url.isBlank()
-                || url.contains("default_fallback_thumbnail.png");
-    }
-
-    private String firstNonBlank(String... arr) {
-        for (String s : arr) {
-            if (s != null && !s.isBlank()) return s;
-        }
-        return "";
-    }
-
-    /** 옵션까지 필요할 때 상세 페이지도 Selenium으로 열어서 파싱 */
-    private String extractOptionsBySelenium(String productId) {
+    /** 옵션 문자열이 필요할 때만 호출(없으면 null) – 새 탭에서 가볍게 추출 */
+    private String extractOptionsByDetailInNewTab(String productId) {
+        String detailUrl = "https://gift.kakao.com/product/" + productId;
+        String original = driver.getWindowHandle();
         try {
-            String detailUrl = "https://gift.kakao.com/product/" + productId;
-            driver.navigate().to(detailUrl);
-            waitUntilDomReady();
-            // 상세에서도 lazy-load 약간 대기
-            lazyScroll(2, 300);
+            ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", detailUrl);
+            wait.until(numberOfWindowsToBe(2));
+            for (String h : driver.getWindowHandles()) {
+                if (!h.equals(original)) {
+                    driver.switchTo().window(h);
+                    break;
+                }
+            }
+            waitDomReady();
+            lazyScroll(2, 200);
 
             String html = driver.getPageSource();
             Document doc = Jsoup.parse(html, detailUrl);
 
-            // 라벨 기반 옵션 추출 (동적 구조 대응 위해 넓게 잡음)
             Elements labels = doc.select("label, button[role=radio], [class*=option] label");
             StringBuilder sb = new StringBuilder();
             for (Element lb : labels) {
                 String t = lb.text();
-                // 가격/수량 등의 라벨은 제외
                 if (t == null) continue;
                 t = t.replaceAll("\\[.*?\\]", "").trim();
                 if (t.isBlank()) continue;
-                // 너무 일반적인 단어는 제외(필요시 보정)
                 if (t.contains("선택") || t.contains("옵션") || t.contains("수량")) continue;
                 if (sb.length() > 0) sb.append(", ");
                 sb.append(t);
@@ -308,19 +299,67 @@ public class ItemCrawlService {
         } catch (Exception e) {
             return null;
         } finally {
-            // 상세에서 돌아가 브랜드 목록 계속
-            driver.navigate().back();
-            waitUntilDomReady();
+            try { driver.close(); } catch (Exception ignored) {}
+            driver.switchTo().window(original);
+            waitDomReady();
         }
     }
 
-    private void waitPriceNodesShort() {
-        // 0.8초 내에서 4회 폴링
-        for (int i = 0; i < 4; i++) {
+    // ====== Wait & Utils ======
+
+    private void waitDomReady() {
+        new WebDriverWait(driver, Duration.ofSeconds(10))
+                .until(d -> ((JavascriptExecutor) d).executeScript("return document.readyState").equals("complete"));
+    }
+
+    private void lazyScroll(int times, long sleepMs) {
+        for (int i = 0; i < times; i++) {
+            ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, document.body.scrollHeight)");
+            try { Thread.sleep(sleepMs); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    /** 가격 힌트 노드가 나타날 때까지 짧게 폴링 (표준 셀렉터만) */
+    private void waitPriceHints() {
+        for (int i = 0; i < 6; i++) {
             Boolean ok = (Boolean) ((JavascriptExecutor) driver).executeScript(
-                    "return !!document.querySelector('[class*=\"price\"], strong, span')");
+                    "return !!document.querySelector('[class*=\"price\"], strong, span');");
             if (Boolean.TRUE.equals(ok)) return;
             try { Thread.sleep(200); } catch (InterruptedException ignored) {}
         }
+    }
+
+    private static final Pattern P_PRICE_ANY = Pattern.compile("(\\d{1,3}(?:,\\d{3})*)(?=\\s*원)");
+
+    private int parsePriceFromText(String text) {
+        if (text == null) return 0;
+        Matcher m = P_PRICE_ANY.matcher(text);
+        if (m.find()) {
+            String num = m.group(1).replace(",", "");
+            try {
+                long v = Long.parseLong(num);
+                if (v <= 0) return 0;
+                return v > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) v;
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private boolean isFallbackImage(String url) {
+        return url == null || url.isBlank() || url.contains("default_fallback_thumbnail.png");
+    }
+
+    private ExpectedCondition<Boolean> numberOfWindowsToBe(int n) {
+        return d -> d != null && d.getWindowHandles().size() == n;
+    }
+
+    // ====== DTO ======
+    private static class ProductRow {
+        String productId;
+        String name;
+        int    price;
+        String imageUrl;
     }
 }

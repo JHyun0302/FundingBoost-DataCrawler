@@ -27,10 +27,10 @@ public class InitController {
     @PostMapping("/items/one")
     public String initItems() {
         int n = itemCrawlService.crawlBrandPage(
-                "https://gift.kakao.com/brand/9888?display=basic", // 디올
+                "https://gift.kakao.com/brand/9888", // 디올
                 "디올",
                 "뷰티",
-                30 // 개수 제한 (필요시 조정)
+                20 // 개수 제한 (필요시 조정)
         );
         return "item 크롤링 완료: " + n;
     }
@@ -38,7 +38,7 @@ public class InitController {
     // 전체 브랜드 일괄
     @PostMapping("/items/all")
     public String initItemsAll() {
-        int n = itemCrawlService.crawlAllBrands(30); // 브랜드당 최대 30개
+        int n = itemCrawlService.crawlAllBrands(20); // 브랜드당 최대 30개
         return "전체 item 크롤링 완료: " + n;
     }
 
