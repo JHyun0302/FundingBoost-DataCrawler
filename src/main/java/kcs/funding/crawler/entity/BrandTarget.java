@@ -1,6 +1,7 @@
 package kcs.funding.crawler.entity;
 
 import jakarta.persistence.*;
+import kcs.funding.crawler.entity.common.BaseTimeEntity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -11,8 +12,14 @@ import lombok.NoArgsConstructor;
 @Table(name = "brand_crawl_target",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_brand_url", columnNames = {"brand_url"})
-        })
-public class BrandTarget {
+        },
+        indexes = {
+                @Index(name = "idx_brand_name", columnList = "brand_name"),
+                @Index(name = "idx_category_name", columnList = "category_name"),
+                @Index(name = "idx_brand_name_category", columnList = "brand_name, category_name")
+        }
+)
+public class BrandTarget extends BaseTimeEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

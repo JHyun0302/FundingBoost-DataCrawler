@@ -5,9 +5,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import kcs.funding.crawler.entity.common.BaseTimeEntity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -15,8 +17,12 @@ import lombok.NoArgsConstructor;
 @Entity
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-@Table(name = "item")
-public class Item {
+@Table(name = "item", indexes = {
+        @Index(name = "idx_item_product_id", columnList = "productId"),
+        @Index(name = "idx_item_brand_category_image", columnList = "brandName,category,imageUrl"),
+        @Index(name = "idx_item_modified_date", columnList = "modifiedDate")
+})
+public class Item extends BaseTimeEntity {
     @Id
     @Column(name = "item_id")
     @GeneratedValue(strategy = GenerationType.IDENTITY)

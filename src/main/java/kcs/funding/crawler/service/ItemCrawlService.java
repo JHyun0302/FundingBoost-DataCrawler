@@ -101,13 +101,31 @@ public class ItemCrawlService {
             final String fCategory = categoryName;
             final String fOption = extractOptionsByDetailInNewTab(r.productId); // 필요 없다면 null 반환 허용
 
-            affected += itemRepository.findByProductId(fPid)
-                    .map(it -> { it.update(fName, fPrice, fImage, fOption); return 0; })
-                    .orElseGet(() -> {
-                        Item item = Item.createItem(fName, fPrice, fImage, fBrand, fCategory, fOption, fPid);
-                        itemRepository.save(item);
-                        return 1;
-                    });
+            /**
+             * 이미 존재하는 item은 db에 insert하지 않고 pass
+             */
+            // 1) productId 기준으로 먼저 update 시도
+            var existingByPid = itemRepository.findByProductId(fPid);
+            if (existingByPid.isPresent()) {
+                existingByPid.get().update(fName, fPrice, fImage, fOption);
+                // update만 했으므로 신규 건수 증가 없음
+                continue;
+            }
+
+            // 2) productId는 없지만 brand+category+imageUrl 이 이미 있으면 "같은 아이템"으로 보고 insert 스킵
+            boolean duplicated =
+                    itemRepository.existsByBrandNameAndCategoryAndAndItemImageUrl(fBrand, fCategory, fImage);
+
+            if (duplicated) {
+                log.debug("skip insert due to duplicated brand/category/image. brand={}, category={}, imageUrl={}", fBrand, fCategory, fImage);
+                // 신규 insert 안 하고 스킵
+                continue;
+            }
+
+            // 3) 여기까지 왔으면 완전히 신규 아이템 -> insert
+            Item item = Item.createItem(fName, fPrice, fImage, fBrand, fCategory, fOption, fPid);
+            itemRepository.save(item);
+            affected++;
         }
 
         log.info("brand='{}' ({}) -> {} items", brandName, brandUrl, affected);
