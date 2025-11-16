@@ -1,9 +1,9 @@
 spring:
   datasource:
-    url: jdbc:oracle:thin:@//HOST:PORT/SERVICE
+    url: jdbc:oracle:thin:@oralce_medium
     driver-class-name: oracle.jdbc.OracleDriver
-    username: 운영계정
-    password: 운영비밀번호
+    username: ADMIN
+    password: Accesstonaver1!
 
   jpa:
     properties:

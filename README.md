@@ -1,4 +1,64 @@
-## 배포 관련
+## docker 배포
+1. ssh 접속
+```markdown
+ssh -i ./${private.key} opc@<공인IP>
+```
+2. ssh 접속 후 os 확인
+```markdown
+cat /etc/os-release
+```
+3. Docker 설치(Oracle Linux)
+```markdown
+# 1) 패키지 캐시 업데이트
+sudo dnf -y update
+
+# 2) Docker 엔진 설치 시도
+sudo dnf -y install docker-engine || sudo dnf -y install docker
+```
+4. 설치 후 확인
+```markdown
+# 데몬 활성화 + 즉시 기동
+sudo systemctl enable --now docker
+
+# 상태 확인
+sudo systemctl status docker
+
+# (선택) 사용자 계정을 docker 그룹에 추가
+sudo usermod -aG docker $USER
+```
+5. docker compose 설치 (v.2.29.7)
+```markdown
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# 확인
+docker compose version
+```
+6. WAR, dockerfile, docker-compse 업로드
+```markdown
+scp -P 22 \
+build/libs/funding-crawler.war \
+Dockerfile \
+docker-compose.yml \
+opc@<공인IP>:/opt/funding-crawler/
+```
+7. 빌드 & 실행
+```markdown
+   cd /opt/funding-crawler
+
+docker compose build
+docker compose up -d
+
+docker compose ps
+docker compose logs -f funding-crawler
+```
+
+---
+## vm 직접 배포
 ```shell
 sudo mkdir -p /opt/funding-crawler/logs
 sudo chown -R funding:funding /opt/funding-crawler
