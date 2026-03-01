@@ -3,18 +3,18 @@ package kcs.funding.crawler.controller;
 import kcs.funding.crawler.service.BrandDiscoveryService;
 import kcs.funding.crawler.service.ItemCrawlService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@ConditionalOnProperty(prefix = "crawler.init-api", name = "enabled", havingValue = "true")
 @RequiredArgsConstructor
 @RequestMapping("/init")
 public class InitController {
 
     private final BrandDiscoveryService brandDiscoveryService;
-
-    private final ItemCrawlService crawlService;
     private final ItemCrawlService itemCrawlService;
 
     @PostMapping("/brands")
@@ -43,4 +43,3 @@ public class InitController {
     }
 
 }
-

@@ -1,14 +1,33 @@
-FROM eclipse-temurin:17-jre-alpine
+FROM gradle:8.7.0-jdk17 AS builder
+
+WORKDIR /workspace
+COPY settings.gradle build.gradle ./
+COPY src src
+
+RUN gradle clean bootWar -x test --no-daemon
+
+FROM debian:bookworm-slim
 
 ENV APP_HOME=/opt/funding-crawler
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       openjdk-17-jre-headless \
+       chromium \
+       chromium-driver \
+       fonts-noto-cjk \
+       ca-certificates \
+       tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p ${APP_HOME}
 
 WORKDIR ${APP_HOME}
 
-COPY funding-crawler.war funding-crawler.war
+COPY --from=builder /workspace/build/libs/funding-crawler.war funding-crawler.war
 
-EXPOSE 8080
+EXPOSE 8090
 
-# 파일 로그 옵션 제거 (logging.file.name 사용 안 함)
-ENTRYPOINT ["sh", "-c", "java -jar /opt/funding-crawler/funding-crawler.war --spring.profiles.active=prod"]
+ENTRYPOINT ["sh", "-c", "java ${JAVA_OPTS:-} -jar /opt/funding-crawler/funding-crawler.war --spring.profiles.active=${SPRING_PROFILES_ACTIVE:-prod}"]

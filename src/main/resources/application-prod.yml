@@ -1,11 +1,13 @@
 spring:
   datasource:
-    url: jdbc:oracle:thin:@oralce_medium
-    driver-class-name: oracle.jdbc.OracleDriver
-    username: ADMIN
-    password: Accesstonaver1!
+    url: ${CRAWLER_DB_URL:jdbc:mysql://mysql:3306/item?allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${CRAWLER_DB_USERNAME:mysql}
+    password: ${CRAWLER_DB_PASSWORD:1q2w3e4r!}
 
   jpa:
+    hibernate:
+      ddl-auto: update
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.OracleDialect
+        dialect: org.hibernate.dialect.MySQLDialect

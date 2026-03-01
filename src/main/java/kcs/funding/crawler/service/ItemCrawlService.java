@@ -174,21 +174,58 @@ public class ItemCrawlService {
                         "  return '';\n" +
                         "}\n" +
                         "function normalize(u){ if(!u) return ''; u=u.trim(); if(u.startsWith('//')) return 'https:'+u; return u; }\n" +
+                        "function rawSrcOf(el){\n" +
+                        "  if(!el) return '';\n" +
+                        "  let src = el.currentSrc || el.getAttribute('src') || el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('data-lazy') || '';\n" +
+                        "  const srcset = el.getAttribute('srcset') || '';\n" +
+                        "  if(!src && srcset){ src = srcset.split(',')[0].trim().split(/\\s+/)[0]; }\n" +
+                        "  if(src.includes('fname=')){\n" +
+                        "    const tail = src.split('fname=')[1]||''; const fname = tail.split('&')[0]||'';\n" +
+                        "    try { src = decodeURIComponent(fname); } catch(e) { src = fname; }\n" +
+                        "    src = src.startsWith('http') ? src : ('https:'+src);\n" +
+                        "  }\n" +
+                        "  if(/^https?%3a/i.test(src)){\n" +
+                        "    try { src = decodeURIComponent(src); } catch(e) {}\n" +
+                        "  }\n" +
+                        "  return normalize(src);\n" +
+                        "}\n" +
+                        "function isBadgeCandidate(url, width, height, cls, alt){\n" +
+                        "  const s = (url||'').toLowerCase();\n" +
+                        "  const c = (cls||'').toLowerCase();\n" +
+                        "  const a = (alt||'').toLowerCase();\n" +
+                        "  if(!s) return true;\n" +
+                        "  if(width > 0 && width < 120) return true;\n" +
+                        "  if(height > 0 && height < 120) return true;\n" +
+                        "  if(s.includes('badge') || s.includes('icon') || s.includes('sticker') || s.includes('label') || s.includes('tag')) return true;\n" +
+                        "  if(c.includes('badge') || c.includes('icon') || c.includes('sticker') || c.includes('label') || c.includes('tag')) return true;\n" +
+                        "  if(a.includes('뱃지') || a.includes('배지') || a.includes('태그') || a.includes('아이콘')) return true;\n" +
+                        "  return false;\n" +
+                        "}\n" +
                         "function imageUrlOf(node){\n" +
+                        "  const media = Array.from(node.querySelectorAll('img, source'));\n" +
+                        "  let best = '';\n" +
+                        "  let bestArea = -1;\n" +
+                        "  for(const el of media){\n" +
+                        "    const url = rawSrcOf(el);\n" +
+                        "    if(!url) continue;\n" +
+                        "    const width = Number(el.getAttribute('width') || el.clientWidth || el.naturalWidth || 0);\n" +
+                        "    const height = Number(el.getAttribute('height') || el.clientHeight || el.naturalHeight || 0);\n" +
+                        "    const cls = el.getAttribute('class') || '';\n" +
+                        "    const alt = el.getAttribute('alt') || '';\n" +
+                        "    if(isBadgeCandidate(url, width, height, cls, alt)) continue;\n" +
+                        "    const area = Math.max(width, 1) * Math.max(height, 1);\n" +
+                        "    if(area >= bestArea){ best = url; bestArea = area; }\n" +
+                        "  }\n" +
+                        "  if(best) return best;\n" +
                         "  let img = node.querySelector('img');\n" +
                         "  if(img){\n" +
-                        "    let u = img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy');\n" +
-                        "    if(u) return normalize(u);\n" +
+                        "    let u = rawSrcOf(img);\n" +
+                        "    if(u) return u;\n" +
                         "  }\n" +
                         "  const s = node.querySelector(\"img[srcset],source[srcset],img[src*='fname='],source[src*='fname=']\");\n" +
                         "  if(s){\n" +
-                        "    let src = s.getAttribute('srcset') || s.getAttribute('src') || '';\n" +
-                        "    if(src.includes(' ')) src = src.split(/\\s+/)[0];\n" +
-                        "    if(src.includes('fname=')){\n" +
-                        "      const tail = src.split('fname=')[1]||''; const fname = tail.split('&')[0]||'';\n" +
-                        "      return fname.startsWith('http') ? fname : ('https:'+fname);\n" +
-                        "    }\n" +
-                        "    return normalize(src);\n" +
+                        "    let src = rawSrcOf(s);\n" +
+                        "    if(src) return src;\n" +
                         "  }\n" +
                         "  return '';\n" +
                         "}\n" +

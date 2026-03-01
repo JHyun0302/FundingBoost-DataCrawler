@@ -30,7 +30,14 @@ sudo usermod -aG docker $USER
 ```markdown
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
 
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" \
+ARCH="$(uname -m)"
+if [ "$ARCH" = "aarch64" ]; then
+  BIN="docker-compose-linux-aarch64"
+else
+  BIN="docker-compose-linux-x86_64"
+fi
+
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.7/${BIN}" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 
 sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
@@ -38,15 +45,30 @@ sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 # 확인
 docker compose version
 ```
-6. WAR, dockerfile, docker-compse 업로드
+6. 로컬에서 환경변수 파일 준비
+```markdown
+cp .env.example .env
+vi .env
+```
+```dotenv
+CRAWLER_DB_URL=jdbc:mysql://mysql:3306/item?allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+CRAWLER_DB_USERNAME=mysql
+CRAWLER_DB_PASSWORD=1q2w3e4r!
+# true면 컨테이너 시작 직후 브랜드/아이템 초기 적재를 자동 수행합니다.
+CRAWLER_BOOTSTRAP_ENABLED=true
+CRAWLER_BOOTSTRAP_ITEM_LIMIT=20
+CRAWLER_INIT_API_ENABLED=true
+```
+7. WAR, dockerfile, docker-compose, .env 업로드
 ```markdown
 scp -P 22 \
 build/libs/funding-crawler.war \
 Dockerfile \
 docker-compose.yml \
+.env \
 opc@<공인IP>:/opt/funding-crawler/
 ```
-7. 빌드 & 실행
+8. 빌드 & 실행
 ```markdown
    cd /opt/funding-crawler
 

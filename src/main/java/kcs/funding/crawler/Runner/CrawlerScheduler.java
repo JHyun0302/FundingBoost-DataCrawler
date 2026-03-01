@@ -1,5 +1,6 @@
 package kcs.funding.crawler.Runner;
 
+import kcs.funding.crawler.service.BrandDiscoveryService;
 import kcs.funding.crawler.service.ItemCrawlService;
 import kcs.funding.crawler.service.ItemService;
 import lombok.RequiredArgsConstructor;
@@ -10,13 +11,14 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class CrawlerScheduler {
 
+    private final BrandDiscoveryService brandDiscoveryService;
     private final ItemCrawlService itemCrawlService;
-
     private final ItemService itemService;
 
     // 매일 오전 0시 실행
     @Scheduled(cron = "0 0 0 * * *")
     public void crawlDaily() {
+        brandDiscoveryService.discoverBrands();
         itemCrawlService.crawlAllBrands(30);
     }
 

@@ -1,6 +1,5 @@
 package kcs.funding.crawler.config;
 
-import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
@@ -15,11 +14,20 @@ public class WebDriverConfig {
 
     @Bean(destroyMethod = "quit")
     public WebDriver webDriver() {
-        WebDriverManager.chromedriver().setup();
+        String chromeDriverPath = System.getenv("CHROMEDRIVER_PATH");
+        if (chromeDriverPath != null && !chromeDriverPath.isBlank()) {
+            System.setProperty("webdriver.chrome.driver", chromeDriverPath);
+        }
+
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox",
                 "--window-size=1280,2200", "--disable-dev-shm-usage",
                 "--lang=ko-KR", "--user-agent=Mozilla/5.0");
+
+        String chromeBinary = System.getenv("CHROME_BIN");
+        if (chromeBinary != null && !chromeBinary.isBlank()) {
+            options.setBinary(chromeBinary);
+        }
         return new ChromeDriver(options);
     }
 
@@ -28,4 +36,3 @@ public class WebDriverConfig {
         return new WebDriverWait(driver, Duration.ofSeconds(12));
     }
 }
-

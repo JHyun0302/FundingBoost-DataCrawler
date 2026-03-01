@@ -29,7 +29,7 @@ dependencies {
     implementation 'com.github.gavlyukovskiy:p6spy-spring-boot-starter:1.9.0'
 
     // DB 드라이버
-    runtimeOnly 'com.oracle.database.jdbc:ojdbc11:23.3.0.23.09'
+    runtimeOnly 'com.mysql:mysql-connector-j'
     runtimeOnly 'com.h2database:h2'
 
     implementation 'net.javacrumbs.shedlock:shedlock-spring:6.10.0'
@@ -40,7 +40,6 @@ dependencies {
     implementation 'org.jsoup:jsoup:1.17.2'
     // Selenium + ChromeDriver 관리
     implementation 'org.seleniumhq.selenium:selenium-java:4.25.0'
-    implementation 'io.github.bonigarcia:webdrivermanager:5.9.2'
 
     // Lombok
     compileOnly 'org.projectlombok:lombok'

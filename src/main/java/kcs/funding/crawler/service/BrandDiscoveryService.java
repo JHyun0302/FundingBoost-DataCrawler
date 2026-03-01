@@ -1,14 +1,14 @@
 package kcs.funding.crawler.service;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
-import java.util.*;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import io.github.bonigarcia.wdm.WebDriverManager;
 import kcs.funding.crawler.entity.BrandTarget;
 import kcs.funding.crawler.repository.BrandTargetRepository;
 import lombok.RequiredArgsConstructor;
@@ -16,13 +16,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.WebDriverWait;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -49,7 +47,16 @@ public class BrandDiscoveryService {
         options.addArguments("--headless=new","--disable-gpu","--no-sandbox",
                 "--window-size=1280,2000","--disable-dev-shm-usage",
                 "--lang=ko-KR","--user-agent=Mozilla/5.0");
-        WebDriverManager.chromedriver().setup();
+
+        String chromeDriverPath = System.getenv("CHROMEDRIVER_PATH");
+        if (chromeDriverPath != null && !chromeDriverPath.isBlank()) {
+            System.setProperty("webdriver.chrome.driver", chromeDriverPath);
+        }
+
+        String chromeBinary = System.getenv("CHROME_BIN");
+        if (chromeBinary != null && !chromeBinary.isBlank()) {
+            options.setBinary(chromeBinary);
+        }
 
         WebDriver driver = new ChromeDriver(options);
         // 실행 중 중복 방지(동일 트랜잭션 가시성 문제 회피)

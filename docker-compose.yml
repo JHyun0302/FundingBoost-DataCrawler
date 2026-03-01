@@ -8,9 +8,15 @@ services:
     container_name: funding-crawler
     restart: always
     environment:
-      - TZ=Asia/Seoul
+      TZ: Asia/Seoul
+      CRAWLER_DB_URL: ${CRAWLER_DB_URL}
+      CRAWLER_DB_USERNAME: ${CRAWLER_DB_USERNAME}
+      CRAWLER_DB_PASSWORD: ${CRAWLER_DB_PASSWORD}
+      CRAWLER_BOOTSTRAP_ENABLED: ${CRAWLER_BOOTSTRAP_ENABLED:-false}
+      CRAWLER_BOOTSTRAP_ITEM_LIMIT: ${CRAWLER_BOOTSTRAP_ITEM_LIMIT:-20}
+      CRAWLER_INIT_API_ENABLED: ${CRAWLER_INIT_API_ENABLED:-false}
     ports:
-      - "8080:8080"
+      - "8090:8090"
     logging:
       driver: json-file
       options:
