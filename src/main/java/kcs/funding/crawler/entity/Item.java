@@ -51,7 +51,7 @@ public class Item extends BaseTimeEntity {
     @Column(name = "category", length = 100)
     private String category;
 
-    @Column(name = "option_name", length = 100)
+    @Column(name = "option_name", length = 2000)
     private String optionName;
 
     @Column(name = "product_id", unique = true, nullable = false)

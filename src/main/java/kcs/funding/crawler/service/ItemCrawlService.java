@@ -7,10 +7,6 @@ import kcs.funding.crawler.repository.BrandTargetRepository;
 import kcs.funding.crawler.repository.ItemRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedCondition;
 import org.openqa.selenium.support.ui.WebDriverWait;
@@ -18,7 +14,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -321,6 +319,7 @@ public class ItemCrawlService {
     }
 
     /** 옵션 문자열이 필요할 때만 호출(없으면 null) – 새 탭에서 가볍게 추출 */
+    @SuppressWarnings("unchecked")
     private String extractOptionsByDetailInNewTab(String productId) {
         String detailUrl = "https://gift.kakao.com/product/" + productId;
         String original = driver.getWindowHandle();
@@ -336,21 +335,45 @@ public class ItemCrawlService {
             waitDomReady();
             lazyScroll(2, 200);
 
-            String html = driver.getPageSource();
-            Document doc = Jsoup.parse(html, detailUrl);
+            Object rawOptions = ((JavascriptExecutor) driver).executeScript(
+                    "const collected = [];\n" +
+                            "const seen = new Set();\n" +
+                            "function pushText(value) {\n" +
+                            "  if (!value) return;\n" +
+                            "  let text = String(value).replace(/\\s+/g, ' ').trim();\n" +
+                            "  if (!text) return;\n" +
+                            "  const lower = text.toLowerCase();\n" +
+                            "  if (lower.includes('상품 옵션을 선택') || lower.includes('선택해주세요')) return;\n" +
+                            "  if (lower === '선택' || lower === '옵션' || lower === '수량') return;\n" +
+                            "  if (lower.includes('구매하기') || lower.includes('펀딩하기') || lower.includes('gifthub')) return;\n" +
+                            "  if (text.length > 80) return;\n" +
+                            "  if (!seen.has(text)) {\n" +
+                            "    seen.add(text);\n" +
+                            "    collected.push(text);\n" +
+                            "  }\n" +
+                            "}\n" +
+                            "document.querySelectorAll('select option').forEach((option) => {\n" +
+                            "  if (option.disabled) return;\n" +
+                            "  const value = (option.textContent || '').trim();\n" +
+                            "  if (!value || !option.value) return;\n" +
+                            "  pushText(value);\n" +
+                            "});\n" +
+                            "document.querySelectorAll('[role=\"option\"], [role=\"radio\"], input[type=\"radio\"] + label').forEach((node) => {\n" +
+                            "  pushText(node.innerText || node.textContent || '');\n" +
+                            "});\n" +
+                            "document.querySelectorAll('[class*=\"option\"], [class*=\"Option\"], [class*=\"select\"], [class*=\"Select\"], fieldset').forEach((container) => {\n" +
+                            "  container.querySelectorAll('label, button, li, span').forEach((node) => {\n" +
+                            "    pushText(node.innerText || node.textContent || '');\n" +
+                            "  });\n" +
+                            "});\n" +
+                            "return collected;");
 
-            Elements labels = doc.select("label, button[role=radio], [class*=option] label");
-            StringBuilder sb = new StringBuilder();
-            for (Element lb : labels) {
-                String t = lb.text();
-                if (t == null) continue;
-                t = t.replaceAll("\\[.*?\\]", "").trim();
-                if (t.isBlank()) continue;
-                if (t.contains("선택") || t.contains("옵션") || t.contains("수량")) continue;
-                if (sb.length() > 0) sb.append(", ");
-                sb.append(t);
+            List<String> normalizedOptions = normalizeOptionValues(rawOptions);
+            if (!normalizedOptions.isEmpty()) {
+                return String.join("\n", normalizedOptions);
             }
-            return sb.length() == 0 ? null : sb.toString();
+
+            return null;
         } catch (Exception e) {
             return null;
         } finally {
@@ -404,6 +427,39 @@ public class ItemCrawlService {
 
     private boolean isFallbackImage(String url) {
         return url == null || url.isBlank() || url.contains("default_fallback_thumbnail.png");
+    }
+
+    private List<String> normalizeOptionValues(Object rawOptions) {
+        if (!(rawOptions instanceof List<?> rawList)) {
+            return List.of();
+        }
+
+        Set<String> deduplicated = new LinkedHashSet<>();
+        for (Object rawValue : rawList) {
+            if (rawValue == null) {
+                continue;
+            }
+
+            String normalized = String.valueOf(rawValue)
+                    .trim()
+                    .replaceAll("\\s+", " ")
+                    .replaceFirst("^(option\\s*[=:]\\s*)", "")
+                    .replaceFirst("^\\[[^\\]]+\\]\\s*", "")
+                    .replaceFirst("^옵션\\s*[=:]\\s*", "")
+                    .trim();
+
+            if (normalized.isBlank()) {
+                continue;
+            }
+
+            if (normalized.contains("선택") || normalized.contains("옵션") || normalized.contains("수량")) {
+                continue;
+            }
+
+            deduplicated.add(normalized);
+        }
+
+        return new ArrayList<>(deduplicated);
     }
 
     private ExpectedCondition<Boolean> numberOfWindowsToBe(int n) {
