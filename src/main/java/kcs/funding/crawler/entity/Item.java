@@ -76,7 +76,9 @@ public class Item extends BaseTimeEntity {
         this.itemName = itemName;
         this.itemPrice = itemPrice;
         this.itemImageUrl = normalizeImageUrl(imageUrl);
-        this.optionName = optionName;
+        if (optionName != null && !optionName.isBlank()) {
+            this.optionName = optionName;
+        }
     }
 
     private static String normalizeImageUrl(String rawUrl) {

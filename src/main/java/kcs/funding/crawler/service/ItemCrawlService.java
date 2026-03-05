@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,7 +57,7 @@ public class ItemCrawlService {
 
     /** 단일 브랜드 적재 (리스트 → 상세 보강) */
     public int crawlBrandPage(String brandUrl, String brandName, String categoryName, int perBrandLimit) {
-        driver.get(brandUrl);
+        navigateWithWindowRecovery(brandUrl);
         waitDomReady();
         lazyScroll(5, 500);
         waitPriceHints();
@@ -73,6 +75,7 @@ public class ItemCrawlService {
         }
 
         int affected = 0;
+        int optionExtracted = 0;
 
         // 2) 상세 보강(가격 0일 때만 새 탭 열어 보강)
         for (ProductRow r : rows) {
@@ -98,6 +101,9 @@ public class ItemCrawlService {
             final String fBrand = brandName;
             final String fCategory = categoryName;
             final String fOption = extractOptionsByDetailInNewTab(r.productId); // 필요 없다면 null 반환 허용
+            if (fOption != null && !fOption.isBlank()) {
+                optionExtracted++;
+            }
 
             /**
              * 이미 존재하는 item은 db에 insert하지 않고 pass
@@ -126,7 +132,7 @@ public class ItemCrawlService {
             affected++;
         }
 
-        log.info("brand='{}' ({}) -> {} items", brandName, brandUrl, affected);
+        log.info("brand='{}' ({}) -> {} items, options extracted={}", brandName, brandUrl, affected, optionExtracted);
         return affected;
     }
 
@@ -280,17 +286,12 @@ public class ItemCrawlService {
     /** 상세 페이지에서 가격 보강(새 탭 이용해 원본 탭 DOM 보존) */
     private int fetchPriceFromDetailInNewTab(String productId) {
         String detailUrl = "https://gift.kakao.com/product/" + productId;
-        String original = driver.getWindowHandle();
+        String original = getCurrentWindowHandleSafely();
+        String detailHandle = null;
         try {
-            ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", detailUrl);
-
-            // 탭 전환 대기
-            wait.until(numberOfWindowsToBe(2));
-            for (String h : driver.getWindowHandles()) {
-                if (!h.equals(original)) {
-                    driver.switchTo().window(h);
-                    break;
-                }
+            detailHandle = openDetailTab(detailUrl, original);
+            if (detailHandle == null) {
+                return 0;
             }
 
             waitDomReady();
@@ -312,9 +313,7 @@ public class ItemCrawlService {
             log.debug("detail price fetch failed: {}", productId, e);
             return 0;
         } finally {
-            try { driver.close(); } catch (Exception ignored) {}
-            driver.switchTo().window(original);
-            waitDomReady();
+            closeDetailTabAndRestoreOriginal(detailHandle, original);
         }
     }
 
@@ -322,15 +321,12 @@ public class ItemCrawlService {
     @SuppressWarnings("unchecked")
     private String extractOptionsByDetailInNewTab(String productId) {
         String detailUrl = "https://gift.kakao.com/product/" + productId;
-        String original = driver.getWindowHandle();
+        String original = getCurrentWindowHandleSafely();
+        String detailHandle = null;
         try {
-            ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", detailUrl);
-            wait.until(numberOfWindowsToBe(2));
-            for (String h : driver.getWindowHandles()) {
-                if (!h.equals(original)) {
-                    driver.switchTo().window(h);
-                    break;
-                }
+            detailHandle = openDetailTab(detailUrl, original);
+            if (detailHandle == null) {
+                return null;
             }
             waitDomReady();
             lazyScroll(2, 200);
@@ -361,10 +357,27 @@ public class ItemCrawlService {
                             "document.querySelectorAll('[role=\"option\"], [role=\"radio\"], input[type=\"radio\"] + label').forEach((node) => {\n" +
                             "  pushText(node.innerText || node.textContent || '');\n" +
                             "});\n" +
-                            "document.querySelectorAll('[class*=\"option\"], [class*=\"Option\"], [class*=\"select\"], [class*=\"Select\"], fieldset').forEach((container) => {\n" +
-                            "  container.querySelectorAll('label, button, li, span').forEach((node) => {\n" +
-                            "    pushText(node.innerText || node.textContent || '');\n" +
-                            "  });\n" +
+                            "document.querySelectorAll('[data-option-name], [data-option], [data-testid*=\"option\"], [data-sentry-component*=\"Option\"]').forEach((node) => {\n" +
+                            "  pushText(node.getAttribute('data-option-name'));\n" +
+                            "  pushText(node.getAttribute('data-option'));\n" +
+                            "  pushText(node.innerText || node.textContent || '');\n" +
+                            "});\n" +
+                            "const decodeEscaped = (value) => {\n" +
+                            "  if (!value) return '';\n" +
+                            "  try {\n" +
+                            "    return JSON.parse('\"' + value.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"') + '\"');\n" +
+                            "  } catch (e) {\n" +
+                            "    return value;\n" +
+                            "  }\n" +
+                            "};\n" +
+                            "document.querySelectorAll('script#__NEXT_DATA__, script[type=\"application/json\"], script[type=\"application/ld+json\"]').forEach((scriptNode) => {\n" +
+                            "  const text = (scriptNode.textContent || '').trim();\n" +
+                            "  if (!text) return;\n" +
+                            "  let match;\n" +
+                            "  const regex = /\\\"optionName\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"/g;\n" +
+                            "  while ((match = regex.exec(text)) !== null) {\n" +
+                            "    pushText(decodeEscaped(match[1]));\n" +
+                            "  }\n" +
                             "});\n" +
                             "return collected;");
 
@@ -377,9 +390,7 @@ public class ItemCrawlService {
         } catch (Exception e) {
             return null;
         } finally {
-            try { driver.close(); } catch (Exception ignored) {}
-            driver.switchTo().window(original);
-            waitDomReady();
+            closeDetailTabAndRestoreOriginal(detailHandle, original);
         }
     }
 
@@ -452,7 +463,20 @@ public class ItemCrawlService {
                 continue;
             }
 
-            if (normalized.contains("선택") || normalized.contains("옵션") || normalized.contains("수량")) {
+            String lower = normalized.toLowerCase(Locale.ROOT);
+            if (lower.contains("상품 옵션을 선택")
+                    || lower.contains("선택해주세요")
+                    || lower.equals("옵션")
+                    || lower.equals("선택")
+                    || lower.equals("수량")) {
+                continue;
+            }
+
+            if (lower.contains("구매하기") || lower.contains("펀딩하기") || lower.contains("gifthub")) {
+                continue;
+            }
+
+            if (normalized.matches("^[0-9,]+$") || normalized.matches("^[0-9,]+\\s*원$")) {
                 continue;
             }
 
@@ -464,6 +488,108 @@ public class ItemCrawlService {
 
     private ExpectedCondition<Boolean> numberOfWindowsToBe(int n) {
         return d -> d != null && d.getWindowHandles().size() == n;
+    }
+
+    private void navigateWithWindowRecovery(String url) {
+        RuntimeException last = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                ensureWindowContext();
+                driver.get(url);
+                return;
+            } catch (NoSuchWindowException e) {
+                last = e;
+                log.warn("window context lost while navigating. retry={}", attempt + 1);
+                recoverWindowContext();
+            }
+        }
+        if (last != null) {
+            throw last;
+        }
+    }
+
+    private void ensureWindowContext() {
+        Set<String> handles = driver.getWindowHandles();
+        if (handles.isEmpty()) {
+            driver.switchTo().newWindow(WindowType.WINDOW);
+            return;
+        }
+
+        try {
+            driver.getWindowHandle();
+        } catch (NoSuchWindowException e) {
+            driver.switchTo().window(handles.iterator().next());
+        }
+    }
+
+    private void recoverWindowContext() {
+        try {
+            Set<String> handles = driver.getWindowHandles();
+            if (handles.isEmpty()) {
+                driver.switchTo().newWindow(WindowType.WINDOW);
+                return;
+            }
+            driver.switchTo().window(handles.iterator().next());
+        } catch (Exception recoveryError) {
+            log.warn("failed to recover window context", recoveryError);
+        }
+    }
+
+    private String getCurrentWindowHandleSafely() {
+        try {
+            return driver.getWindowHandle();
+        } catch (NoSuchWindowException e) {
+            Set<String> handles = driver.getWindowHandles();
+            if (handles.isEmpty()) {
+                return null;
+            }
+            String fallback = handles.iterator().next();
+            driver.switchTo().window(fallback);
+            return fallback;
+        }
+    }
+
+    private String openDetailTab(String detailUrl, String originalHandle) {
+        Set<String> beforeHandles = new HashSet<>(driver.getWindowHandles());
+        ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", detailUrl);
+
+        boolean opened = wait.until(d -> d != null && d.getWindowHandles().size() > beforeHandles.size());
+        if (!opened) {
+            return null;
+        }
+
+        for (String handle : driver.getWindowHandles()) {
+            if (!beforeHandles.contains(handle)) {
+                driver.switchTo().window(handle);
+                return handle;
+            }
+        }
+
+        // 새 핸들을 찾지 못하면 원래 핸들 복귀 시도
+        if (originalHandle != null && driver.getWindowHandles().contains(originalHandle)) {
+            driver.switchTo().window(originalHandle);
+        }
+        return null;
+    }
+
+    private void closeDetailTabAndRestoreOriginal(String detailHandle, String originalHandle) {
+        Set<String> handles = driver.getWindowHandles();
+        if (detailHandle != null && handles.contains(detailHandle)) {
+            try {
+                driver.switchTo().window(detailHandle);
+                driver.close();
+            } catch (Exception ignored) {}
+        }
+
+        Set<String> remainHandles = driver.getWindowHandles();
+        try {
+            if (originalHandle != null && remainHandles.contains(originalHandle)) {
+                driver.switchTo().window(originalHandle);
+            } else if (!remainHandles.isEmpty()) {
+                driver.switchTo().window(remainHandles.iterator().next());
+            }
+            waitDomReady();
+        } catch (Exception ignored) {}
     }
 
     // ====== DTO ======
