@@ -1,5 +1,7 @@
 package kcs.funding.crawler.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import kcs.funding.crawler.entity.BrandTarget;
 import kcs.funding.crawler.entity.Item;
@@ -12,6 +14,10 @@ import org.openqa.selenium.support.ui.ExpectedCondition;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -26,6 +32,13 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 @Slf4j
 public class ItemCrawlService {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final HttpClient OPTION_API_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+    private static final int OPTION_STORAGE_MAX_COUNT = 80;
+    private static final int OPTION_STORAGE_MAX_CHARS = 1800;
 
     private final ItemRepository itemRepository;
     private final BrandTargetRepository brandTargetRepository;
@@ -100,7 +113,7 @@ public class ItemCrawlService {
             final String fImage = r.imageUrl;
             final String fBrand = brandName;
             final String fCategory = categoryName;
-            final String fOption = extractOptionsByDetailInNewTab(r.productId); // 필요 없다면 null 반환 허용
+            final String fOption = extractOptions(r.productId); // 옵션 API 우선, 실패 시 DOM fallback
             if (fOption != null && !fOption.isBlank()) {
                 optionExtracted++;
             }
@@ -111,7 +124,9 @@ public class ItemCrawlService {
             // 1) productId 기준으로 먼저 update 시도
             var existingByPid = itemRepository.findByProductId(fPid);
             if (existingByPid.isPresent()) {
-                existingByPid.get().update(fName, fPrice, fImage, fOption);
+                Item existingItem = existingByPid.get();
+                existingItem.update(fName, fPrice, fImage, fOption);
+                itemRepository.save(existingItem);
                 // update만 했으므로 신규 건수 증가 없음
                 continue;
             }
@@ -134,6 +149,14 @@ public class ItemCrawlService {
 
         log.info("brand='{}' ({}) -> {} items, options extracted={}", brandName, brandUrl, affected, optionExtracted);
         return affected;
+    }
+
+    private String extractOptions(String productId) {
+        String optionsFromApi = extractOptionsByApi(productId);
+        if (optionsFromApi != null && !optionsFromApi.isBlank()) {
+            return optionsFromApi;
+        }
+        return extractOptionsByDetailInNewTab(productId);
     }
 
     // ====== Snapshot & Parsing ======
@@ -383,7 +406,7 @@ public class ItemCrawlService {
 
             List<String> normalizedOptions = normalizeOptionValues(rawOptions);
             if (!normalizedOptions.isEmpty()) {
-                return String.join("\n", normalizedOptions);
+                return compactOptionLines(normalizedOptions);
             }
 
             return null;
@@ -391,6 +414,78 @@ public class ItemCrawlService {
             return null;
         } finally {
             closeDetailTabAndRestoreOriginal(detailHandle, original);
+        }
+    }
+
+    private String extractOptionsByApi(String productId) {
+        String apiUrl = "https://gift.kakao.com/a/product-detail/v1/products/" + productId + "/options";
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(apiUrl))
+                    .GET()
+                    .timeout(Duration.ofSeconds(8))
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Referer", "https://gift.kakao.com/product/" + productId)
+                    .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) FundingBoostCrawler/1.0")
+                    .build();
+
+            HttpResponse<String> response = OPTION_API_HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200 || response.body() == null || response.body().isBlank()) {
+                return null;
+            }
+
+            JsonNode root = OBJECT_MAPPER.readTree(response.body());
+            List<String> rawOptions = extractOptionCandidatesFromApi(root);
+            List<String> normalizedOptions = normalizeOptionValues(rawOptions);
+            if (normalizedOptions.isEmpty()) {
+                return null;
+            }
+
+            return compactOptionLines(normalizedOptions);
+        } catch (Exception e) {
+            log.debug("option api fetch failed: pid={}", productId, e);
+            return null;
+        }
+    }
+
+    private List<String> extractOptionCandidatesFromApi(JsonNode root) {
+        List<String> candidates = new ArrayList<>();
+        collectOptionCandidates(root.path("simpleOptions"), candidates);
+        collectOptionCandidates(root.path("combinationOptions"), candidates);
+        collectOptionCandidates(root.path("customs"), candidates);
+        return candidates;
+    }
+
+    private void collectOptionCandidates(JsonNode node, List<String> out) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return;
+        }
+
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                collectOptionCandidates(child, out);
+            }
+            return;
+        }
+
+        if (node.isObject()) {
+            appendTextField(out, node, "value");
+            appendTextField(out, node, "name");
+            appendTextField(out, node, "optionName");
+            collectOptionCandidates(node.path("options"), out);
+            collectOptionCandidates(node.path("simpleOptions"), out);
+            collectOptionCandidates(node.path("combinationOptions"), out);
+            return;
+        }
+
+        if (node.isTextual()) {
+            out.add(node.asText(""));
+        }
+    }
+
+    private void appendTextField(List<String> out, JsonNode objectNode, String fieldName) {
+        JsonNode fieldValue = objectNode.get(fieldName);
+        if (fieldValue != null && fieldValue.isTextual()) {
+            out.add(fieldValue.asText(""));
         }
     }
 
@@ -464,6 +559,9 @@ public class ItemCrawlService {
             }
 
             String lower = normalized.toLowerCase(Locale.ROOT);
+            if (lower.equals("blank") || lower.equals("none") || lower.equals("null")) {
+                continue;
+            }
             if (lower.contains("상품 옵션을 선택")
                     || lower.contains("선택해주세요")
                     || lower.equals("옵션")
@@ -476,6 +574,10 @@ public class ItemCrawlService {
                 continue;
             }
 
+            if (normalized.length() > 120) {
+                continue;
+            }
+
             if (normalized.matches("^[0-9,]+$") || normalized.matches("^[0-9,]+\\s*원$")) {
                 continue;
             }
@@ -484,6 +586,35 @@ public class ItemCrawlService {
         }
 
         return new ArrayList<>(deduplicated);
+    }
+
+    private String compactOptionLines(List<String> options) {
+        StringBuilder compacted = new StringBuilder();
+        int count = 0;
+        for (String option : options) {
+            if (option == null || option.isBlank()) {
+                continue;
+            }
+            if (count >= OPTION_STORAGE_MAX_COUNT) {
+                break;
+            }
+
+            int additionalLength = option.length();
+            if (compacted.length() > 0) {
+                additionalLength += 1; // newline
+            }
+            if (compacted.length() + additionalLength > OPTION_STORAGE_MAX_CHARS) {
+                break;
+            }
+
+            if (compacted.length() > 0) {
+                compacted.append('\n');
+            }
+            compacted.append(option);
+            count++;
+        }
+
+        return compacted.isEmpty() ? null : compacted.toString();
     }
 
     private ExpectedCondition<Boolean> numberOfWindowsToBe(int n) {
